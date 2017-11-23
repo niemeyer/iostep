@@ -7,10 +7,10 @@ import (
 )
 
 
-// A ReadStepper transforms a reader type that processes data in
+// A StepReader transforms a reader type that processes data in
 // a blocking way into a simpler non-blocking interface that
 // processes data with a single Step function.
-type ReadStepper struct {
+type StepReader struct {
 	mu  sync.Mutex
 	err error
 
@@ -31,8 +31,8 @@ type ReadStepper struct {
 // If the returned reader also implements io.Closer, its Close
 // method will be called when EOF is reached or the stepper's
 // Close method is explicitly called.
-func Reader(newr func(r io.Reader) (io.Reader, error)) *ReadStepper {
-	s := &ReadStepper{newr: newr}
+func Reader(newr func(r io.Reader) (io.Reader, error)) *StepReader {
+	s := &StepReader{newr: newr}
 	s.insig = sync.NewCond(&s.mu)
 	s.outsig = sync.NewCond(&s.mu)
 	go s.readLoop()
@@ -45,7 +45,7 @@ func Reader(newr func(r io.Reader) (io.Reader, error)) *ReadStepper {
 // The stepper stops waiting for more data from the output reader
 // when it is requested for more data from the input reader than
 // is available.
-func (s *ReadStepper) Step(data []byte) ([]byte, error) {
+func (s *StepReader) Step(data []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -69,7 +69,7 @@ func (s *ReadStepper) Step(data []byte) ([]byte, error) {
 //
 // If the Step function is called after the stepper is closed it will
 // return the previous error, or io.EOF if there were no errors.
-func (s *ReadStepper) Close() error {
+func (s *StepReader) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -84,10 +84,10 @@ func (s *ReadStepper) Close() error {
 	return s.err
 }
 
-func (s *ReadStepper) readLoop() {
+func (s *StepReader) readLoop() {
 	data := make([]byte, 8192)
 
-	r, err := s.newr(&stepperReader{s})
+	r, err := s.newr(&stepReader{s})
 	if err != nil {
 		s.mu.Lock()
 		s.err = err
@@ -123,11 +123,11 @@ func (s *ReadStepper) readLoop() {
 	s.outsig.Signal()
 }
 
-type stepperReader struct {
-	s *ReadStepper
+type stepReader struct {
+	s *StepReader
 }
 
-func (r *stepperReader) Read(data []byte) (int, error) {
+func (r *stepReader) Read(data []byte) (int, error) {
 	r.s.mu.Lock()
 	defer r.s.mu.Unlock()
 
