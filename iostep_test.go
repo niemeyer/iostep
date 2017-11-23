@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"testing"
 
 	"gopkg.in/niemeyer/iostep.v0"
 )
@@ -59,12 +60,13 @@ func ExampleStepReader_Close() {
 		return zlib.NewReader(r)
 	})
 
-	ijs := [][2]int{{0, 15}, {15, 25}, {25, 30}, {-1, -1}, {30, 40}, {40, 44}}
+	ijs := [][2]int{{0, 15}, {15, 21}, {-1, -1}, {21, 44}}
 
 	for _, ij := range ijs {
 		i, j := ij[0], ij[1]
 
 		if i == -1 {
+			fmt.Println("Closed.")
 			s.Close()
 			continue
 		}
@@ -75,8 +77,60 @@ func ExampleStepReader_Close() {
 
 	// Output:
 	// 00:15 => "", <nil>
-	// 15:25 => "Hello world!\n", <nil>
-	// 25:30 => "", <nil>
-	// 30:40 => "", EOF
-	// 40:44 => "", EOF
+	// 15:21 => "Hello world!\n", <nil>
+	// Closed.
+	// 21:44 => "", EOF
+}
+
+type dataOnClose struct {
+	input   io.Reader
+	pending string
+}
+
+func (r *dataOnClose) Read(b []byte) (n int, err error) {
+	if len(r.pending) == 0 {
+		n, err = r.input.Read(b)
+		if n > 0 {
+			r.pending += string(b[:n])
+			err = nil
+		}
+	}
+	if len(r.pending) == 0 && err == io.EOF {
+		r.pending += "EOF"
+	}
+	if len(r.pending) > 0 {
+		n = copy(b, r.pending)
+		r.pending = r.pending[n:]
+	}
+	if n == 0 {
+		err = io.EOF
+	}
+	return n, err
+}
+
+func TestReaderDataOnClose(t *testing.T) {
+	r := iostep.Reader(func(r io.Reader) (io.Reader, error) {
+		return &dataOnClose{input: r, pending: "initial..."}, nil
+	})
+
+
+	got, err := r.Step([]byte("stepping..."))
+	want := "initial...stepping..."
+	if err != nil || string(got) != want {
+		t.Fatalf("want %q, got %q with err %v", want, got, err)
+	}
+
+	got, err = r.Step([]byte("stepping..."))
+	want = "stepping..."
+	if err != nil || string(got) != want {
+		t.Fatalf("want %q, got %q with err %v", want, got, err)
+	}
+
+	r.Close()
+
+	got, err = r.Step(nil)
+	want = "EOF"
+	if err != nil || string(got) != want {
+		t.Fatalf("want %q, got %q with err %v", want, got, err)
+	}
 }

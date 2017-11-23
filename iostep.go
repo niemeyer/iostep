@@ -21,6 +21,10 @@ type StepReader struct {
 
 	output []byte
 	outsig *sync.Cond
+
+	result []byte
+
+	reading bool
 }
 
 // Reader returns a new stepper that uses the reader returned by
@@ -35,6 +39,7 @@ func Reader(newr func(r io.Reader) (io.Reader, error)) *StepReader {
 	s := &StepReader{newr: newr}
 	s.insig = sync.NewCond(&s.mu)
 	s.outsig = sync.NewCond(&s.mu)
+	s.reading = true
 	go s.readLoop()
 	return s
 }
@@ -45,27 +50,32 @@ func Reader(newr func(r io.Reader) (io.Reader, error)) *StepReader {
 // The stepper stops waiting for more data from the output reader
 // when it is requested for more data from the input reader than
 // is available.
+//
+// The returned slice is reused by the stepper on the next call,
+// so do not keep any references to its data.
 func (s *StepReader) Step(data []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.err != nil || len(data) == 0 {
-		return nil, s.err
+	if s.err == nil {
+		s.input = data
+		s.insig.Signal()
+	}
+	if s.reading {
+		s.outsig.Wait()
 	}
 
+	s.result, s.output = s.output, s.result
 	s.output = s.output[:0]
-	s.input = data
-	s.insig.Signal()
-	s.outsig.Wait()
 
-	if len(s.output) > 0 {
-		return s.output, nil
+	if len(s.result) > 0 {
+		return s.result, nil
 	}
 	return nil, s.err
 }
 
 // Close closes the stepper and also requests the generated output
-// reader to be closed asynchronously if it implements io.Closer.
+// reader to be closed if it implements io.Closer.
 //
 // If the Step function is called after the stepper is closed it will
 // return the previous error, or io.EOF if there were no errors.
@@ -76,7 +86,12 @@ func (s *StepReader) Close() error {
 	if s.err == nil {
 		s.err = io.EOF
 	}
+
+	s.input = nil
 	s.insig.Signal()
+	for s.reading {
+		s.outsig.Wait()
+	}
 
 	if s.err == io.EOF {
 		return nil
@@ -91,18 +106,19 @@ func (s *StepReader) readLoop() {
 	if err != nil {
 		s.mu.Lock()
 		s.err = err
+		s.reading = false
 		s.outsig.Signal()
 		s.mu.Unlock()
 		return
 	}
 	for {
 		n, err := r.Read(data)
+		s.mu.Lock()
 		// This limit should probably be configurable.
 		if n+len(s.output) > 1024*1024 {
 			n = 0
 			err = fmt.Errorf("excessive data on single step")
 		}
-		s.mu.Lock()
 		s.output = append(s.output, data[:n]...)
 		if err != nil {
 			if s.err == nil {
@@ -114,13 +130,15 @@ func (s *StepReader) readLoop() {
 					s.err = err
 				}
 			}
+
+			s.reading = false
+			s.insig.Signal()
+			s.outsig.Signal()
+			s.mu.Unlock()
+			return
 		}
 		s.mu.Unlock()
-		if err != nil {
-			break
-		}
 	}
-	s.outsig.Signal()
 }
 
 type stepReader struct {
