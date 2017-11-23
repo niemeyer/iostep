@@ -74,11 +74,12 @@ func (s *StepReader) Step(data []byte) ([]byte, error) {
 	return nil, s.err
 }
 
-// Close closes the stepper and also requests the generated output
-// reader to be closed if it implements io.Closer.
+// Close closes the stepper and also the generated output reader if
+// it implements io.Closer.
 //
 // If the Step function is called after the stepper is closed it will
-// return the previous error, or io.EOF if there were no errors.
+// return any remaining data, and then either the previous error or
+// io.EOF if there were no errors.
 func (s *StepReader) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
